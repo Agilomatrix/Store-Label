@@ -89,6 +89,19 @@ max_capacity_value_style = ParagraphStyle(
 )
 # --- END: INDIVIDUAL STYLE DEFINITIONS ---
 
+def get_dynamic_model_fontsize(text, max_size=14, min_size=7, max_chars=9):
+    """Dynamically scale font size for model name / qty text based on character
+    count. 1 character (or fewer) gets the largest size (max_size); 9 or more
+    characters gets the smallest size (min_size); lengths in between are scaled
+    linearly so the text always fits within the fixed MTM box."""
+    length = len(str(text).strip())
+    if length <= 1:
+        return max_size
+    if length >= max_chars:
+        return min_size
+    ratio = (length - 1) / (max_chars - 1)
+    return int(round(max_size - ratio * (max_size - min_size)))
+
 
 def clean_number_format(value):
     """Clean number formatting to preserve integers and handle decimals properly."""
@@ -209,11 +222,17 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     mtm_box_width = mtm_section_width / max_models
 
     headers, values = [], []
-    for model_name in all_models:
-        headers.append(Paragraph(f"<b>{model_name}</b>", ParagraphStyle(name='model_header', fontSize=14, alignment=TA_CENTER)))
+    for idx, model_name in enumerate(all_models):
+        header_fontsize = get_dynamic_model_fontsize(model_name) if model_name else 14
+        headers.append(Paragraph(f"<b>{model_name}</b>", ParagraphStyle(
+            name=f'model_header_{idx}', fontSize=header_fontsize, alignment=TA_CENTER, leading=header_fontsize + 2)))
+
         qty_val = mtm_quantities.get(model_name, "") if model_name else ""
-        values.append(Paragraph(f"<b>{clean_number_format(qty_val)}</b>" if qty_val else "",
-            ParagraphStyle(name=f"Qty_{model_name}", fontName='Helvetica-Bold', fontSize=14, alignment=TA_CENTER)))
+        qty_str = clean_number_format(qty_val) if qty_val else ""
+        value_fontsize = get_dynamic_model_fontsize(qty_str) if qty_str else 14
+        values.append(Paragraph(f"<b>{qty_str}</b>" if qty_str else "",
+            ParagraphStyle(name=f"Qty_{idx}", fontName='Helvetica-Bold', fontSize=value_fontsize,
+                            alignment=TA_CENTER, leading=value_fontsize + 2)))
     
     mtm_table = Table([headers, values], colWidths=[mtm_box_width] * max_models, rowHeights=[mtm_row_height/2, mtm_row_height/2])
     mtm_table.setStyle(TableStyle([
