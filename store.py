@@ -1,17 +1,15 @@
 import streamlit as st
 import pandas as pd
 import os
-import re
-from reportlab.lib.pagesizes import A4
+import tempfile
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Paragraph, PageBreak, Image, KeepTogether
 from reportlab.lib.units import cm, mm
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from io import BytesIO
-import subprocess
-import sys
-import tempfile
+from PIL import Image as PILImage  # noqa: F401  (kept for compatibility; PIL used internally by qrcode/reportlab)
+import qrcode
 
 # Define sticker dimensions
 STICKER_WIDTH = 10 * cm
@@ -27,53 +25,32 @@ STICKER_PAGESIZE = (STICKER_WIDTH, STICKER_HEIGHT)
 # This margin keeps everything a safe distance from the edge.
 PRINT_MARGIN = 1.5 * mm
 
-# Define content box dimensions (now inset by the print-safe margin)
+# Define content box dimensions (inset by the print-safe margin)
 CONTENT_BOX_WIDTH = STICKER_WIDTH - (2 * PRINT_MARGIN)
 CONTENT_BOX_HEIGHT = 7.2 * cm
 
-# Check for PIL and install if needed
-try:
-    from PIL import Image as PILImage
-except ImportError:
-    st.write("PIL not available. Installing...")
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pillow'])
-    from PIL import Image as PILImage
-
-# Check for QR code library and install if needed
-try:
-    import qrcode
-except ImportError:
-    st.write("qrcode not available. Installing...")
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'qrcode'])
-    import qrcode
-
 # --- START: INDIVIDUAL STYLE DEFINITIONS ---
 
-# Style for the "Part No" label
 part_no_label_style = ParagraphStyle(
     name='PartNoLabel', fontName='Helvetica-Bold', fontSize=18,
     alignment=TA_CENTER, leading=18
 )
 
-# Style for the "Description" label
 desc_label_style = ParagraphStyle(
     name='DescLabel', fontName='Helvetica-Bold', fontSize=12,
     alignment=TA_CENTER, leading=18
 )
 
-# Style for the "Max capacity" label
 max_cap_label_style = ParagraphStyle(
     name='MaxCapLabel', fontName='Helvetica-Bold', fontSize=12,
     alignment=TA_CENTER, leading=18
 )
 
-# Style for the "Store Location" label
 store_loc_label_style = ParagraphStyle(
     name='StoreLocLabel', fontName='Helvetica-Bold', fontSize=12,
     alignment=TA_CENTER, leading=18
 )
 
-# A very large, bold style specifically for the Part Number value
 part_no_value_style = ParagraphStyle(
     name='PartNoValue', fontName='Helvetica-Bold', fontSize=24,
     alignment=TA_CENTER, leading=32, wordWrap='CJK', splitLongWords=1
@@ -91,7 +68,6 @@ def get_dynamic_desc_style(text):
         alignment=TA_LEFT, leading=font_size + 2, wordWrap='CJK', splitLongWords=1,
     )
 
-# Style for the Max Capacity value
 max_capacity_value_style = ParagraphStyle(
     name='MaxCapValue', fontName='Helvetica', fontSize=18,
     alignment=TA_CENTER, leading=20
@@ -166,29 +142,28 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     part_no = clean_number_format(row.get(part_no_col, ""))
     desc = str(row.get(desc_col, "")).strip()
     max_capacity = clean_number_format(row.get(max_capacity_col, "")) if max_capacity_col else ""
-    
-    store_loc_values = extract_store_location_data_from_excel(row)
-    full_store_location = " ".join([str(v) for v in store_loc_values if v])
-    
+
+    store_loc_values_raw = extract_store_location_data_from_excel(row)
+    full_store_location = " ".join([str(v) for v in store_loc_values_raw if v])
+
     mtm_quantities = row.get('aggregated_models', {})
     qty_veh_string = ", ".join([f"{model}:{qty}" for model, qty in sorted(mtm_quantities.items()) if model])
 
     qr_data = (f"Part No: {part_no}\nDescription: {desc}\nMax Capacity: {max_capacity}\n"
                f"Store Location: {full_store_location}\nQTY/VEH: {qty_veh_string}")
     qr_image = generate_qr_code(qr_data)
-    
-    PADDED_CONTENT_WIDTH = CONTENT_BOX_WIDTH - (0.2 * cm) 
+
+    PADDED_CONTENT_WIDTH = CONTENT_BOX_WIDTH - (0.2 * cm)
     sticker_content = []
-    
+
     header_row_height, desc_row_height, max_cap_row_height, store_loc_row_height = 1.2*cm, 1.4*cm, 1.2*cm, 1.2*cm
 
-    # Create Paragraph objects using their unique, individual styles
     part_no_label_p = Paragraph("Part No", part_no_label_style)
     part_no_value_p = Paragraph(part_no, part_no_value_style)
-    
+
     desc_label_p = Paragraph("Description", desc_label_style)
     desc_value_p = Paragraph(desc, get_dynamic_desc_style(desc))
-    
+
     max_cap_label_p = Paragraph("Max capacity", max_cap_label_style)
     max_cap_value_p = Paragraph(str(max_capacity), max_capacity_value_style)
 
@@ -197,7 +172,7 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
         [desc_label_p, desc_value_p],
         [max_cap_label_p, max_cap_value_p]
     ], colWidths=[PADDED_CONTENT_WIDTH*0.3, PADDED_CONTENT_WIDTH*0.7], rowHeights=[header_row_height, desc_row_height, max_cap_row_height])
-    
+
     main_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -206,22 +181,22 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     sticker_content.append(main_table)
 
     store_loc_label = Paragraph("Store Location", store_loc_label_style)
-    store_loc_values = [v for v in extract_store_location_data_from_excel(row) if v] or [""]
-    inner_table_width = PADDED_CONTENT_WIDTH * 0.7 # Adjusted to the new 70% width
+    store_loc_values = [v for v in store_loc_values_raw if v] or [""]
+    inner_table_width = PADDED_CONTENT_WIDTH * 0.7
     num_cols = len(store_loc_values)
     inner_col_widths = [inner_table_width / num_cols] * num_cols if num_cols > 0 else [inner_table_width]
-    
+
     store_loc_inner_table = Table([store_loc_values], colWidths=inner_col_widths, rowHeights=[store_loc_row_height])
     store_loc_inner_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 1, colors.black), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                                                ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('FONTSIZE', (0, 0), (-1, -1), 14),
                                                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold')]))
-    
+
     store_loc_table = Table([[store_loc_label, store_loc_inner_table]], colWidths=[PADDED_CONTENT_WIDTH*0.3, inner_table_width], rowHeights=[store_loc_row_height])
     store_loc_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 1, colors.black), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                                           ('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
     sticker_content.append(store_loc_table)
     sticker_content.append(Spacer(1, 0.3*cm))
-    
+
     bottom_row_width = PADDED_CONTENT_WIDTH
     mtm_section_width = bottom_row_width * 0.7
     qr_section_width = bottom_row_width * 0.3
@@ -242,7 +217,7 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
         values.append(Paragraph(f"<b>{qty_str}</b>" if qty_str else "",
             ParagraphStyle(name=f"Qty_{idx}", fontName='Helvetica-Bold', fontSize=value_fontsize,
                             alignment=TA_CENTER, leading=value_fontsize + 2)))
-    
+
     mtm_table = Table([headers, values], colWidths=[mtm_box_width] * max_models, rowHeights=[mtm_row_height/2, mtm_row_height/2])
     mtm_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -265,16 +240,16 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     ]))
 
     sticker_content.append(bottom_row_table)
-    
+
     sticker_table = Table([[sticker_content]], colWidths=[CONTENT_BOX_WIDTH], rowHeights=[CONTENT_BOX_HEIGHT])
     sticker_table.setStyle(TableStyle([
         ('BOX', (0, 0), (-1, -1), 2, colors.black),
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'), 
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
         ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
     ]))
-    
+
     return KeepTogether([sticker_table])
 
 def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=None):
@@ -290,7 +265,7 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
         return None
 
     original_columns = df.columns.tolist()
-    
+
     if len(original_columns) < 2:
         if status_callback: status_callback("❌ Error: File must have at least 2 columns (Part Number, Description).")
         return None
@@ -298,9 +273,9 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
     part_no_col = next((c for c in original_columns if 'PART' in str(c).upper() and 'NO' in str(c).upper()), original_columns[0])
     desc_col = next((c for c in original_columns if 'DESC' in str(c).upper()), original_columns[1])
     max_capacity_col = next((c for c in original_columns if 'MAX' in str(c).upper() and 'CAPACITY' in str(c).upper()), None)
-    
+
     model_cols_original = original_columns[2:7] if len(original_columns) >= 7 else original_columns[2:]
-    
+
     all_models = []
     for col in model_cols_original:
         col_str = str(col).strip()
@@ -308,7 +283,7 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
             all_models.append('')
         else:
             all_models.append(col_str.upper())
-            
+
     model_mapping = list(zip(model_cols_original, all_models))
 
     def get_model_quantities(row, mapping):
@@ -323,9 +298,6 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
 
     df['aggregated_models'] = df.apply(lambda row: get_model_quantities(row, model_mapping), axis=1)
 
-    # NOTE: margins are now set to PRINT_MARGIN (instead of 0) so content never
-    # sits exactly at the physical label edge, which is what dedicated
-    # label/sticker printers tend to distort or overlap during printing.
     doc = SimpleDocTemplate(
         output_pdf_path, pagesize=STICKER_PAGESIZE,
         topMargin=PRINT_MARGIN, bottomMargin=PRINT_MARGIN,
@@ -333,23 +305,23 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
     )
     all_elements = []
     total_stickers = len(df)
-    
+
     current_row_index = 0
     try:
         for i in range(total_stickers):
             current_row_index = i + 2
             if status_callback: status_callback(f"⚙️ Creating sticker for row {current_row_index}...")
-            
+
             row_data = df.iloc[i].to_dict()
             sticker = create_single_sticker(row_data, part_no_col, desc_col, max_capacity_col, all_models)
             all_elements.append(sticker)
-            
+
             if i < total_stickers - 1:
                 all_elements.append(PageBreak())
 
         if status_callback: status_callback("Building final PDF...")
         doc.build(all_elements)
-        if status_callback: status_callback(f"✅ PDF generated successfully!")
+        if status_callback: status_callback("✅ PDF generated successfully!")
         return output_pdf_path
 
     except Exception as e:
@@ -399,11 +371,11 @@ def main():
                     update_status("Starting label generation...")
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_output:
                         result_path = generate_sticker_labels(temp_input_path, tmp_output.name, status_callback=update_status)
-                    
+
                     if result_path:
                         with open(result_path, 'rb') as pdf_file:
                             pdf_data = pdf_file.read()
-                        
+
                         st.download_button(
                             label="📥 Download PDF Labels", data=pdf_data,
                             file_name=f"mezzanine_labels_{os.path.splitext(uploaded_file.name)[0]}.pdf",
@@ -433,7 +405,7 @@ def main():
         with col3: st.markdown(" **🔄 Smart Data Handling** \n - Reads models directly from columns C-G\n - Ignores empty/unnamed columns\n - Aggregates data onto one sticker")
 
     st.markdown("---")
-    st.markdown("<p style='text-align: center; color: gray; font-size: 14px;'>© 2025 Agilomatrix - Mezzanine Label Generator v8.1 (Print-safe margins)</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 14px;'>© 2025 Agilomatrix - Mezzanine Label Generator v9.0</p>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
