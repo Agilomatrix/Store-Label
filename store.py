@@ -56,15 +56,15 @@ def get_dynamic_partno_style(text):
     part numbers (e.g. '03-MECH-226-01') stay on fewer lines and don't
     overlap/crowd the box border."""
     length = len(str(text).strip())
-    if length <= 8:
+    if length <= 10:
         font_size = 24
-    elif length <= 11:
+    elif length <= 13:
         font_size = 20
-    elif length <= 14:
+    elif length <= 15:
         font_size = 16
-    elif length <= 18:
+    elif length <= 19:
         font_size = 13
-    elif length <= 22:
+    elif length <= 23:
         font_size = 11
     else:
         font_size = 9
