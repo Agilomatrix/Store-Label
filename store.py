@@ -5,7 +5,7 @@ import re
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Paragraph, PageBreak, Image, KeepTogether
-from reportlab.lib.units import cm
+from reportlab.lib.units import cm, mm
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from io import BytesIO
@@ -18,8 +18,17 @@ STICKER_WIDTH = 10 * cm
 STICKER_HEIGHT = 15 * cm
 STICKER_PAGESIZE = (STICKER_WIDTH, STICKER_HEIGHT)
 
-# Define content box dimensions
-CONTENT_BOX_WIDTH = 10 * cm
+# --- PRINT-SAFE MARGIN ---
+# Dedicated label/sticker printers (Zebra, TSC, Brother QL, etc.) usually have a
+# small physical zone near the edges (feed rollers / cutter / gap sensor) that
+# cannot be printed cleanly. Placing content exactly at 0mm often gets
+# compressed or nudged by the printer firmware, which shows up as "overlapping"
+# text/borders on the physical label even though the PDF itself looks fine.
+# This margin keeps everything a safe distance from the edge.
+PRINT_MARGIN = 1.5 * mm
+
+# Define content box dimensions (now inset by the print-safe margin)
+CONTENT_BOX_WIDTH = STICKER_WIDTH - (2 * PRINT_MARGIN)
 CONTENT_BOX_HEIGHT = 7.2 * cm
 
 # Check for PIL and install if needed
@@ -314,7 +323,14 @@ def generate_sticker_labels(excel_file_path, output_pdf_path, status_callback=No
 
     df['aggregated_models'] = df.apply(lambda row: get_model_quantities(row, model_mapping), axis=1)
 
-    doc = SimpleDocTemplate(output_pdf_path, pagesize=STICKER_PAGESIZE, topMargin=0, bottomMargin=0, leftMargin=0, rightMargin=0)
+    # NOTE: margins are now set to PRINT_MARGIN (instead of 0) so content never
+    # sits exactly at the physical label edge, which is what dedicated
+    # label/sticker printers tend to distort or overlap during printing.
+    doc = SimpleDocTemplate(
+        output_pdf_path, pagesize=STICKER_PAGESIZE,
+        topMargin=PRINT_MARGIN, bottomMargin=PRINT_MARGIN,
+        leftMargin=PRINT_MARGIN, rightMargin=PRINT_MARGIN
+    )
     all_elements = []
     total_stickers = len(df)
     
@@ -417,7 +433,7 @@ def main():
         with col3: st.markdown(" **🔄 Smart Data Handling** \n - Reads models directly from columns C-G\n - Ignores empty/unnamed columns\n - Aggregates data onto one sticker")
 
     st.markdown("---")
-    st.markdown("<p style='text-align: center; color: gray; font-size: 14px;'>© 2025 Agilomatrix - Mezzanine Label Generator v8.0 (Final)</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 14px;'>© 2025 Agilomatrix - Mezzanine Label Generator v8.1 (Print-safe margins)</p>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
