@@ -154,6 +154,18 @@ def extract_store_location_data_from_excel(row_data, max_cells=12):
             values.append(val)
     return values
 
+def extract_line_location(row_data):
+    """Extract the 'Line Location' value (a single free-text column, e.g.
+    '12 M LE - ST-10 to 50 -KIT-TR-LH-01-A1'). This is used only inside the
+    QR code payload — it is NOT printed on the visible sticker layout."""
+    col_map = {str(k).upper(): k for k in row_data.keys()}
+    for name in ['LINE LOCATION', 'LINE_LOCATION', 'LINELOCATION']:
+        if name in col_map:
+            val = row_data[col_map[name]]
+            if pd.notna(val) and str(val).strip().lower() not in ['nan', 'none', 'null', '']:
+                return str(val).strip()
+    return ""
+
 def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_models):
     """Create a single sticker layout with all its components."""
     part_no = clean_number_format(row.get(part_no_col, ""))
@@ -163,11 +175,15 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     store_loc_values_raw = extract_store_location_data_from_excel(row)
     full_store_location = " ".join([str(v) for v in store_loc_values_raw if v])
 
+    line_location = extract_line_location(row)
+
     mtm_quantities = row.get('aggregated_models', {})
     qty_veh_string = ", ".join([f"{model}:{qty}" for model, qty in sorted(mtm_quantities.items()) if model])
 
-    qr_data = (f"Part No: {part_no}\nDescription: {desc}\nMax Capacity: {max_capacity}\n"
-               f"Store Location: {full_store_location}\nQTY/VEH: {qty_veh_string}")
+    # QR code now carries ONLY Store Location + Line Location (per latest
+    # requirement) — Part No / Description / Max Capacity / QTY-VEH are still
+    # shown on the printed sticker but are no longer embedded in the QR data.
+    qr_data = f"Store Location: {full_store_location}\nLine Location: {line_location}"
     qr_image = generate_qr_code(qr_data)
 
     PADDED_CONTENT_WIDTH = CONTENT_BOX_WIDTH - (0.2 * cm)
