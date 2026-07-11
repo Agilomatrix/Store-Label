@@ -51,10 +51,27 @@ store_loc_label_style = ParagraphStyle(
     alignment=TA_CENTER, leading=18
 )
 
-part_no_value_style = ParagraphStyle(
-    name='PartNoValue', fontName='Helvetica-Bold', fontSize=24,
-    alignment=TA_CENTER, leading=32, wordWrap='CJK', splitLongWords=1
-)
+def get_dynamic_partno_style(text):
+    """Dynamically shrink the Part No font as the text gets longer, so long
+    part numbers (e.g. '03-MECH-226-01') stay on fewer lines and don't
+    overlap/crowd the box border."""
+    length = len(str(text).strip())
+    if length <= 8:
+        font_size = 24
+    elif length <= 11:
+        font_size = 20
+    elif length <= 14:
+        font_size = 16
+    elif length <= 18:
+        font_size = 13
+    elif length <= 22:
+        font_size = 11
+    else:
+        font_size = 9
+    return ParagraphStyle(
+        name='PartNoValue', fontName='Helvetica-Bold', fontSize=font_size,
+        alignment=TA_CENTER, leading=font_size + 4, wordWrap='CJK', splitLongWords=1
+    )
 
 def get_dynamic_desc_style(text):
     """Dynamically adjust font size for the description value."""
@@ -159,7 +176,7 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     header_row_height, desc_row_height, max_cap_row_height, store_loc_row_height = 1.2*cm, 1.4*cm, 1.2*cm, 1.2*cm
 
     part_no_label_p = Paragraph("Part No", part_no_label_style)
-    part_no_value_p = Paragraph(part_no, part_no_value_style)
+    part_no_value_p = Paragraph(part_no, get_dynamic_partno_style(part_no))
 
     desc_label_p = Paragraph("Description", desc_label_style)
     desc_value_p = Paragraph(desc, get_dynamic_desc_style(desc))
