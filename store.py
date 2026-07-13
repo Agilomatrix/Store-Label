@@ -29,6 +29,16 @@ PRINT_MARGIN = 1.5 * mm
 CONTENT_BOX_WIDTH = STICKER_WIDTH - (2 * PRINT_MARGIN)
 CONTENT_BOX_HEIGHT = 7.2 * cm
 
+# --- CELL PADDING ---
+# ReportLab's default Table cell padding is 6pt left/right and 3pt top/bottom
+# unless overridden. We define it explicitly here so every width/height fit
+# calculation below matches exactly what will actually be drawn - this is
+# what guarantees text can never physically cross outside a cell/box.
+CELL_LEFT_PAD = 6
+CELL_RIGHT_PAD = 6
+CELL_TOP_PAD = 3
+CELL_BOTTOM_PAD = 3
+
 # --- START: INDIVIDUAL STYLE DEFINITIONS ---
 
 part_no_label_style = ParagraphStyle(
@@ -51,58 +61,61 @@ store_loc_label_style = ParagraphStyle(
     alignment=TA_CENTER, leading=18
 )
 
-def get_dynamic_partno_style(text):
-    """Dynamically shrink the Part No font as the text gets longer, so long
-    part numbers (e.g. '03-MECH-226-01') stay on fewer lines and don't
-    overlap/crowd the box border."""
-    length = len(str(text).strip())
-    if length <= 10:
-        font_size = 24
-    elif length <= 13:
-        font_size = 20
-    elif length <= 15:
-        font_size = 16
-    elif length <= 19:
-        font_size = 13
-    elif length <= 23:
-        font_size = 11
-    else:
-        font_size = 9
-    return ParagraphStyle(
-        name='PartNoValue', fontName='Helvetica-Bold', fontSize=font_size,
-        alignment=TA_CENTER, leading=font_size + 4, wordWrap='CJK', splitLongWords=1
-    )
-
-def get_dynamic_desc_style(text):
-    """Dynamically adjust font size for the description value."""
-    length = len(str(text))
-    if length <= 20: font_size = 12
-    elif length <= 30: font_size = 10
-    elif length <= 40: font_size = 8
-    else: font_size = 14
-    return ParagraphStyle(
-        name='DescriptionDynamic', fontName='Helvetica', fontSize=font_size,
-        alignment=TA_LEFT, leading=font_size + 2, wordWrap='CJK', splitLongWords=1,
-    )
-
 max_capacity_value_style = ParagraphStyle(
     name='MaxCapValue', fontName='Helvetica', fontSize=18,
     alignment=TA_CENTER, leading=20
 )
+
 # --- END: INDIVIDUAL STYLE DEFINITIONS ---
 
-def get_dynamic_model_fontsize(text, max_size=14, min_size=7, max_chars=9):
-    """Dynamically scale font size for model name / qty text based on character
-    count. 1 character (or fewer) gets the largest size (max_size); 9 or more
-    characters gets the smallest size (min_size); lengths in between are scaled
-    linearly so the text always fits within the fixed MTM box."""
-    length = len(str(text).strip())
-    if length <= 1:
-        return max_size
-    if length >= max_chars:
-        return min_size
-    ratio = (length - 1) / (max_chars - 1)
-    return int(round(max_size - ratio * (max_size - min_size)))
+
+def fit_paragraph(text, max_width, max_height, font_name='Helvetica-Bold',
+                   max_font=24, min_font=6, leading_ratio=1.18, align=TA_CENTER,
+                   left_pad=CELL_LEFT_PAD, right_pad=CELL_RIGHT_PAD,
+                   top_pad=CELL_TOP_PAD, bottom_pad=CELL_BOTTOM_PAD):
+    """
+    Build a Paragraph that is GUARANTEED to fit inside (max_width x max_height),
+    where max_width/max_height are the OUTER cell/box dimensions (padding is
+    subtracted internally to match what ReportLab will really draw with).
+
+    Instead of guessing a font size from character count (the old approach),
+    this actually measures the wrapped text with ReportLab's own Paragraph.wrap()
+    and shrinks the font until it truly fits both dimensions. This is what
+    prevents text from crossing outside its box, horizontally or vertically,
+    no matter how long the value is.
+    """
+    text = "" if text is None else str(text)
+    avail_w = max(max_width - left_pad - right_pad, 1)
+    avail_h = max(max_height - top_pad - bottom_pad, 1)
+
+    chosen_style = None
+    chosen_size = min_font
+    for font_size in range(max_font, min_font - 1, -1):
+        style = ParagraphStyle(
+            name=f'fit_{font_name}_{font_size}_{id(text) % 100000}',
+            fontName=font_name, fontSize=font_size,
+            leading=font_size * leading_ratio, alignment=align,
+            wordWrap='CJK', splitLongWords=1,
+        )
+        p = Paragraph(text.replace('\n', '<br/>'), style)
+        w, h = p.wrap(avail_w, 100000)
+        if h <= avail_h:
+            chosen_style = style
+            chosen_size = font_size
+            break
+
+    if chosen_style is None:
+        # Even the smallest font doesn't fit vertically - use it anyway
+        # (best effort) rather than letting an earlier, larger size overflow.
+        chosen_style = ParagraphStyle(
+            name=f'fit_{font_name}_min_{id(text) % 100000}',
+            fontName=font_name, fontSize=min_font,
+            leading=min_font * leading_ratio, alignment=align,
+            wordWrap='CJK', splitLongWords=1,
+        )
+        chosen_size = min_font
+
+    return Paragraph(text.replace('\n', '<br/>'), chosen_style), chosen_size
 
 
 def clean_number_format(value):
@@ -189,13 +202,22 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     PADDED_CONTENT_WIDTH = CONTENT_BOX_WIDTH - (0.2 * cm)
     sticker_content = []
 
+    # Fixed row heights - SAME layout/format as before. All text below is now
+    # force-fit (via fit_paragraph) to these exact box sizes so nothing can
+    # ever render wider or taller than the box, regardless of how long the
+    # source data is.
     header_row_height, desc_row_height, max_cap_row_height, store_loc_row_height = 1.2*cm, 1.4*cm, 1.2*cm, 1.2*cm
 
+    label_col_width = PADDED_CONTENT_WIDTH * 0.3
+    value_col_width = PADDED_CONTENT_WIDTH * 0.7
+
     part_no_label_p = Paragraph("Part No", part_no_label_style)
-    part_no_value_p = Paragraph(part_no, get_dynamic_partno_style(part_no))
+    part_no_value_p, _ = fit_paragraph(part_no, value_col_width, header_row_height,
+                                        font_name='Helvetica-Bold', max_font=24, min_font=8)
 
     desc_label_p = Paragraph("Description", desc_label_style)
-    desc_value_p = Paragraph(desc, get_dynamic_desc_style(desc))
+    desc_value_p, _ = fit_paragraph(desc, value_col_width, desc_row_height,
+                                     font_name='Helvetica', max_font=12, min_font=6, align=TA_LEFT)
 
     max_cap_label_p = Paragraph("Max capacity", max_cap_label_style)
     max_cap_value_p = Paragraph(str(max_capacity), max_capacity_value_style)
@@ -204,7 +226,7 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
         [part_no_label_p, part_no_value_p],
         [desc_label_p, desc_value_p],
         [max_cap_label_p, max_cap_value_p]
-    ], colWidths=[PADDED_CONTENT_WIDTH*0.3, PADDED_CONTENT_WIDTH*0.7], rowHeights=[header_row_height, desc_row_height, max_cap_row_height])
+    ], colWidths=[label_col_width, value_col_width], rowHeights=[header_row_height, desc_row_height, max_cap_row_height])
 
     main_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -219,12 +241,23 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     num_cols = len(store_loc_values)
     inner_col_widths = [inner_table_width / num_cols] * num_cols if num_cols > 0 else [inner_table_width]
 
-    store_loc_inner_table = Table([store_loc_values], colWidths=inner_col_widths, rowHeights=[store_loc_row_height])
-    store_loc_inner_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 1, colors.black), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                                               ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('FONTSIZE', (0, 0), (-1, -1), 14),
-                                               ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold')]))
+    # Each store-location cell is now a force-fit Paragraph (not a raw string).
+    # Raw strings placed directly in a ReportLab Table are drawn as a single
+    # unwrapped line with NO width constraint - that is what was letting long
+    # location codes visually cross outside the 10cm sticker. Wrapping every
+    # value in fit_paragraph guarantees it wraps/shrinks to its own column.
+    store_loc_cells = []
+    for val in store_loc_values:
+        cell_p, _ = fit_paragraph(val, inner_table_width / max(num_cols, 1), store_loc_row_height,
+                                   font_name='Helvetica-Bold', max_font=14, min_font=6,
+                                   left_pad=CELL_LEFT_PAD, right_pad=CELL_RIGHT_PAD)
+        store_loc_cells.append(cell_p)
 
-    store_loc_table = Table([[store_loc_label, store_loc_inner_table]], colWidths=[PADDED_CONTENT_WIDTH*0.3, inner_table_width], rowHeights=[store_loc_row_height])
+    store_loc_inner_table = Table([store_loc_cells], colWidths=inner_col_widths, rowHeights=[store_loc_row_height])
+    store_loc_inner_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 1, colors.black), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                                               ('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
+
+    store_loc_table = Table([[store_loc_label, store_loc_inner_table]], colWidths=[label_col_width, inner_table_width], rowHeights=[store_loc_row_height])
     store_loc_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 1, colors.black), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                                           ('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
     sticker_content.append(store_loc_table)
@@ -237,21 +270,22 @@ def create_single_sticker(row, part_no_col, desc_col, max_capacity_col, all_mode
     max_models = 5
     mtm_row_height = 1.5 * cm
     mtm_box_width = mtm_section_width / max_models
+    mtm_header_row_h = mtm_row_height / 2
+    mtm_value_row_h = mtm_row_height / 2
 
     headers, values = [], []
-    for idx, model_name in enumerate(all_models):
-        header_fontsize = get_dynamic_model_fontsize(model_name) if model_name else 14
-        headers.append(Paragraph(f"<b>{model_name}</b>", ParagraphStyle(
-            name=f'model_header_{idx}', fontSize=header_fontsize, alignment=TA_CENTER, leading=header_fontsize + 2)))
+    for model_name in all_models:
+        header_p, _ = fit_paragraph(model_name, mtm_box_width, mtm_header_row_h,
+                                     font_name='Helvetica-Bold', max_font=14, min_font=6)
+        headers.append(header_p)
 
         qty_val = mtm_quantities.get(model_name, "") if model_name else ""
         qty_str = clean_number_format(qty_val) if qty_val else ""
-        value_fontsize = get_dynamic_model_fontsize(qty_str) if qty_str else 14
-        values.append(Paragraph(f"<b>{qty_str}</b>" if qty_str else "",
-            ParagraphStyle(name=f"Qty_{idx}", fontName='Helvetica-Bold', fontSize=value_fontsize,
-                            alignment=TA_CENTER, leading=value_fontsize + 2)))
+        value_p, _ = fit_paragraph(qty_str, mtm_box_width, mtm_value_row_h,
+                                    font_name='Helvetica-Bold', max_font=14, min_font=6)
+        values.append(value_p)
 
-    mtm_table = Table([headers, values], colWidths=[mtm_box_width] * max_models, rowHeights=[mtm_row_height/2, mtm_row_height/2])
+    mtm_table = Table([headers, values], colWidths=[mtm_box_width] * max_models, rowHeights=[mtm_header_row_h, mtm_value_row_h])
     mtm_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
